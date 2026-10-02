@@ -1,7 +1,7 @@
 """Common dataclasses usable in models and control of machine drives."""
 
 from dataclasses import dataclass, field
-from typing import Callable, Protocol, Tuple
+from typing import Callable, Protocol, Tuple, cast
 
 import numpy as np
 from scipy.optimize import root, root_scalar
@@ -15,6 +15,7 @@ class BaseSynchronousMachinePars(Protocol):
 
     n_p: int
     R_s: float
+    G_c: float
 
     def magnetic_map(
         self,
@@ -115,74 +116,6 @@ class BaseSynchronousMachinePars(Protocol):
         """
         ...
 
-    def aux_flux(
-        self,
-        i_s_dq: complex | np.ndarray,
-        exp_j_theta_m: complex | np.ndarray | None = None,
-    ) -> complex | np.ndarray:
-        """
-        Auxiliary flux linkage as a function of current.
-
-        Parameters
-        ----------
-        i_s_dq : complex | ndarray
-            Stator current (A) in rotor coordinates.
-        exp_j_theta_m : complex | np.ndarray, optional
-            Complex exponential of the electrical rotor angle.
-
-        Returns
-        -------
-        complex | ndarray
-            Auxiliary flux linkage (Vs).
-
-        """
-        # This form is valid in the saturated case as well
-        L_s = self.incr_ind_mat(i_s_dq, exp_j_theta_m)
-        L_dd = L_s[0, 0]
-        L_dq = L_s[0, 1]
-        L_qq = L_s[1, 1]
-        psi_s_dq = complex(self.psi_s_dq(i_s_dq, exp_j_theta_m))
-        return (
-            psi_s_dq
-            - L_qq * np.real(i_s_dq)
-            - 1j * L_dd * np.imag(i_s_dq)
-            + 1j * L_dq * np.conj(i_s_dq)
-        )
-
-    def aux_current(
-        self,
-        i_s_dq: complex | np.ndarray,
-        exp_j_theta_m: complex | np.ndarray | None = None,
-    ) -> complex | np.ndarray:
-        """
-        Auxiliary current as a function of current.
-
-        Parameters
-        ----------
-        i_s_dq : complex | ndarray
-            Stator current (A) in rotor coordinates.
-        exp_j_theta_m : complex | ndarray, optional
-            Complex exponential of the electrical rotor angle.
-
-        Returns
-        -------
-        complex | ndarray
-            Auxiliary current (A).
-
-        """
-        # This form is valid in the saturated case as well
-        L_s = self.incr_ind_mat(i_s_dq, exp_j_theta_m)
-        inv_L_s = np.linalg.inv(L_s)
-        G_dd = inv_L_s[0, 0]
-        G_dq = inv_L_s[0, 1]
-        G_qq = inv_L_s[1, 1]
-        psi_s_dq = complex(self.psi_s_dq(i_s_dq, exp_j_theta_m))
-        return (
-            (G_qq * np.real(psi_s_dq) + 1j * G_dd * np.imag(psi_s_dq))
-            - 1j * G_dq * np.conj(psi_s_dq)
-            - i_s_dq
-        )
-
     def iterate_i_s_dq(self, psi_s_dq: complex) -> complex:
         """Solve for the current given the flux linkage using root finding."""
         ...
@@ -206,6 +139,9 @@ class SynchronousMachinePars(BaseSynchronousMachinePars):
         q-axis inductance (H).
     psi_f : float
         Permanent-magnet flux linkage (Vs).
+    G_c : float, optional
+        Core-loss conductance (S), modeled in parallel with the magnetizing branch,
+        defaults to 0 (no core losses).
 
     """
 
@@ -214,6 +150,7 @@ class SynchronousMachinePars(BaseSynchronousMachinePars):
     L_d: float
     L_q: float
     psi_f: float
+    G_c: float = 0.0
 
     def i_s_dq(
         self, psi_s_dq: complex | np.ndarray, exp_j_theta_m=None
@@ -269,6 +206,9 @@ class SaturatedSynchronousMachinePars(BaseSynchronousMachinePars):
         Stator flux linkage (Vs) as a function of the stator current (A). This function
         should be differentiable, if incremental inductances are used. Needed only for
         control methods and optimal reference loci, not used in the system model.
+    G_c : float, optional
+        Core-loss conductance (S), modeled in parallel with the magnetizing branch,
+        defaults to 0 (no core losses).
 
     """
 
@@ -276,6 +216,7 @@ class SaturatedSynchronousMachinePars(BaseSynchronousMachinePars):
     R_s: float
     i_s_dq_fcn: Callable[[complex | np.ndarray], complex | np.ndarray] | None = None
     psi_s_dq_fcn: Callable[[complex | np.ndarray], complex | np.ndarray] | None = None
+    G_c: float = 0.0
     psi_f: float = field(init=False, default=0.0)
     L_d0: float = field(init=False)
     L_q0: float = field(init=False)
@@ -317,8 +258,15 @@ class SaturatedSynchronousMachinePars(BaseSynchronousMachinePars):
         self, i_s_dq: complex | np.ndarray, exp_j_theta_m=None
     ) -> np.ndarray:
         """Incremental inductance matrix at given current."""
-        psi_dev_d = self.psi_s_dq(i_s_dq + EPS) - self.psi_s_dq(i_s_dq - EPS)
-        psi_dev_q = self.psi_s_dq(i_s_dq + 1j * EPS) - self.psi_s_dq(i_s_dq - 1j * EPS)
+        # Use the Jacobian of the flux map, if available (e.g., GradNet flux maps)
+        if (jacobian := getattr(self.psi_s_dq_fcn, "jacobian", None)) is not None:
+            return np.moveaxis(jacobian(i_s_dq), (-2, -1), (0, 1))
+        pts = np.array(
+            [i_s_dq + EPS, i_s_dq - EPS, i_s_dq + 1j * EPS, i_s_dq - 1j * EPS]
+        )
+        psi = cast(np.ndarray, self.psi_s_dq(pts))
+        psi_dev_d = psi[0] - psi[1]
+        psi_dev_q = psi[2] - psi[3]
         L_dd = np.real(psi_dev_d) / (2 * EPS)
         L_qq = np.imag(psi_dev_q) / (2 * EPS)
         L_dq = np.real(psi_dev_q) / (2 * EPS)
@@ -340,8 +288,11 @@ class SaturatedSynchronousMachinePars(BaseSynchronousMachinePars):
             err = complex(self.psi_s_dq(i_s)) - psi_s_dq
             return [err.real, err.imag]
 
+        def jac(x: list[float]) -> np.ndarray:
+            return self.incr_ind_mat(x[0] + 1j * x[1])
+
         i_s0 = (psi_s_dq.real - self.psi_f) / self.L_d0 + 1j * psi_s_dq.imag / self.L_q0
-        sol = root(error, [i_s0.real, i_s0.imag], method="hybr", options={"maxfev": 50})
+        sol = root(error, [i_s0.real, i_s0.imag], jac=jac, method="hybr")
         return sol.x[0] + 1j * sol.x[1]
 
 
@@ -365,6 +316,9 @@ class SpatialSaturatedSynchronousMachinePars(BaseSynchronousMachinePars):
         Stator current (A) and electromagnetic torque (Nm) per pole pair as functions of
         the stator flux linkage (Vs) and the complex exponential of the electrical rotor
         angle.
+    G_c : float, optional
+        Core-loss conductance (S), modeled in parallel with the magnetizing branch,
+        defaults to 0 (no core losses).
 
     """
 
@@ -374,6 +328,7 @@ class SpatialSaturatedSynchronousMachinePars(BaseSynchronousMachinePars):
         [complex | np.ndarray, complex | np.ndarray],
         Tuple[complex | np.ndarray, float | np.ndarray],
     ]
+    G_c: float = 0.0
     psi_f: float = field(init=False, default=0.0)
 
     def __post_init__(self) -> None:
@@ -461,6 +416,9 @@ class InductionMachinePars:
     L_s : float | Callable[[float], float]
         Stator inductance (H). If callable, it should be a function of the stator flux
         linkage magnitude (Vs).
+    G_c : float, optional
+        Core-loss conductance (S), modeled in parallel with the magnetizing branch,
+        defaults to 0 (no core losses).
 
     Attributes
     ----------
@@ -486,6 +444,7 @@ class InductionMachinePars:
     R_r: float
     L_ell: float
     L_s: float | Callable[[float], float]
+    G_c: float = 0.0
     psi_s: float = 0.0
 
     def update_psi_s(self, psi_s: float) -> None:
@@ -548,7 +507,7 @@ class InductionMachinePars:
         R_r = par.R_R / g**2
         L_ell = par.L_sgm / g
         L_s = par.L_M + par.L_sgm
-        return cls(R_s=par.R_s, R_r=R_r, L_ell=L_ell, L_s=L_s, n_p=par.n_p)
+        return cls(R_s=par.R_s, R_r=R_r, L_ell=L_ell, L_s=L_s, n_p=par.n_p, G_c=par.G_c)
 
 
 # %%
@@ -572,6 +531,9 @@ class InductionMachineInvGammaPars:
         Leakage inductance (H).
     L_M : float
         Magnetizing inductance (H).
+    G_c : float, optional
+        Core-loss conductance (S), modeled in parallel with the magnetizing branch,
+        defaults to 0 (no core losses).
 
     Attributes
     ----------
@@ -590,6 +552,7 @@ class InductionMachineInvGammaPars:
     R_R: float
     L_sgm: float
     L_M: float
+    G_c: float = 0.0
 
     def update_psi_s(self, psi_s: float) -> None:
         """Update the stator flux linkage magnitude state."""

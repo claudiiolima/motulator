@@ -26,7 +26,7 @@ copyright = "2026, Aalto Electric Drives"
 author = "Aalto Electric Drives"
 
 # The full version, including alpha/beta/rc tags
-release = "0.7.6"
+release = "0.8.0"
 
 # -- General configuration -------------------------------------------------------------
 
@@ -99,6 +99,7 @@ mathjax3_config = {
             "usref": "\\mathbf{u}_\\mathrm{s}^\\mathrm{ref}",
             "usreflim": "\\bar{\\mathbf{u}}_\\mathrm{s}^\\mathrm{ref}",
             "is": "\\mathbf{i}_\\mathrm{s}",
+            "isp": "\\mathbf{i}_\\mathrm{s}'",
             "isref": "\\mathbf{i}_\\mathrm{s}^\\mathrm{ref}",
             "iss": "\\mathbf{i}_\\mathrm{s}^\\mathrm{s}",
             "ir": "\\mathbf{i}_\\mathrm{r}",
@@ -160,6 +161,7 @@ mathjax3_config = {
             "Gdd": "\\varGamma_\\mathrm{dd}",
             "Gqq": "\\varGamma_\\mathrm{qq}",
             "Gdq": "\\varGamma_\\mathrm{dq}",
+            "Gc": "G_\\mathrm{c}",
             # Angular frequencies and mechanical quantities
             "omegam": "\\omega_\\mathrm{m}",
             "omegamo": "\\omega_\\mathrm{m0}",
@@ -336,7 +338,22 @@ autoapi_keep_files = True
 autoapi_add_toctree_entry = False
 autoapi_member_order = "alphabetical"
 
-from sphinx_gallery.sorting import ExplicitOrder
+from sphinx_gallery.sorting import ExplicitOrder, NumberOfCodeLinesSortKey
+
+
+class ExampleSortKey:
+    """Sort examples by the number of code lines, but place the listed ones last."""
+
+    last = ["plot_13kva_do_gfm_sag.py"]
+
+    def __init__(self, src_dir):
+        self.n_lines = NumberOfCodeLinesSortKey(src_dir)
+
+    def __call__(self, filename):
+        name = os.path.basename(filename)
+        rank = self.last.index(name) if name in self.last else -1
+        return (rank, self.n_lines(filename))
+
 
 sphinx_gallery_conf = {
     "examples_dirs": ["../../examples/drive", "../../examples/grid"],
@@ -354,6 +371,7 @@ sphinx_gallery_conf = {
             "../../examples/grid/identification",
         ]
     ),
+    "within_subsection_order": ExampleSortKey,
 }
 
 # List of patterns, relative to source directory, that match files and directories to

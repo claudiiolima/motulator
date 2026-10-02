@@ -121,8 +121,7 @@ class CurrentReferenceGenerator:
         self.i_s_max = i_s_max
         self.k_u = k_u
         self.i_sd_nom = psi_s_nom / (par.L_M + par.L_sgm)
-        if k_fw == 0:
-            self.k_fw = 2 * par.R_R / (w_s_nom * par.L_sgm**2)
+        self.k_fw = k_fw or 2 * par.R_R / (w_s_nom * par.L_sgm**2)
         self.i_sd_ref = self.i_sd_nom  # Integral state
 
     def compute_output(self, tau_M_ref: float, psi_R: float) -> tuple[complex, float]:
@@ -283,7 +282,12 @@ class CurrentVectorController:
         theta_M_meas: float | None,
     ) -> ObserverOutputs:
         """Get the feedback signals."""
-        return self.observer.compute_output(u_s_ab, i_s_ab, w_M_meas)
+        if self.sensorless:
+            return self.observer.compute_output(u_s_ab, i_s_ab)
+        if w_M_meas is None:
+            raise ValueError("Rotor speed must be provided in sensored mode")
+        eps = w_M_meas - self.observer.speed_observer.w_M
+        return self.observer.compute_output(u_s_ab, i_s_ab, eps, 1.0)
 
     def compute_output(self, tau_M_ref: float, fbk: ObserverOutputs) -> References:
         """Compute references."""

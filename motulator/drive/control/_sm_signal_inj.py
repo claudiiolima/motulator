@@ -1,6 +1,7 @@
 """Sensorless control with signal injection for synchronous machine drives."""
 
 from cmath import exp
+from collections import deque
 from typing import cast
 
 from motulator.common.control._base import TimeSeries
@@ -19,6 +20,86 @@ from motulator.drive.utils._parameters import (
 
 
 # %%
+class SquareWaveInjection:
+    """
+    Square-wave signal injection with demodulation.
+
+    This injects a square-wave voltage in the estimated d-axis direction and computes
+    the mechanical position error signal by demodulating the current response. Cross-
+    saturation errors are compensated for using flux maps.
+
+    Parameters
+    ----------
+    par : SynchronousMachinePars | SaturatedSynchronousMachinePars
+        Machine model parameters.
+    U_inj : float
+        Injected voltage amplitude (V).
+    T_s : float
+        Sampling period (s).
+    N_inj : int, optional
+        Number of sampling periods per injection voltage half-period, defaults to 1.
+
+    """
+
+    def __init__(
+        self,
+        par: SynchronousMachinePars | SaturatedSynchronousMachinePars,
+        U_inj: float,
+        T_s: float,
+        N_inj: int = 1,
+    ) -> None:
+        if N_inj < 1:
+            raise ValueError("N_inj must be a positive integer")
+        self.par = par
+        self.U_inj = U_inj
+        self.N_inj = N_inj
+        # Constant error gain based on the unsaturated inductances
+        L_s = par.incr_ind_mat(0j)
+        self.k = 0.5 * L_s[0, 0] / (L_s[1, 1] - L_s[0, 0]) / par.n_p
+        self.u_sd_inj: float = U_inj
+        self._sign: float = 1.0
+        self._T_s = T_s
+        self._psi_sq_history: deque[float] = deque(maxlen=2 * N_inj + 1)
+        self._eps: float = 0.0
+        self._inj_counter: int = 0
+
+    def compute_error(self, i_s_ab: complex, theta_m: float) -> float:
+        """Compute mechanical position error signal."""
+        # Apply the flux map to compensate the cross saturation
+        i_s = exp(-1j * theta_m) * i_s_ab
+        psi_sq = complex(self.par.psi_s_dq(i_s)).imag
+        self._psi_sq_history.append(psi_sq)
+
+        if len(self._psi_sq_history) < 2 * self.N_inj + 1:
+            return self._eps
+        if self._inj_counter != 0:
+            return self._eps
+
+        # Compute the second difference over two injection half-periods
+        d_psi_sq = (
+            self._psi_sq_history[-1]
+            - 2.0 * self._psi_sq_history[-1 - self.N_inj]
+            + self._psi_sq_history[-1 - 2 * self.N_inj]
+        )
+
+        # Update the error signal at injection voltage transitions
+        if abs(self.u_sd_inj) > 0:
+            self._eps = self.k * d_psi_sq / (self.u_sd_inj * self.N_inj * self._T_s)
+        else:
+            self._eps = 0.0
+
+        return self._eps
+
+    def update(self, T_s: float, scale: float = 1.0) -> None:
+        """Toggle the injection voltage, whose amplitude is scaled by `scale`."""
+        self._inj_counter = (self._inj_counter + 1) % self.N_inj
+        if self._inj_counter == 0:
+            self._sign = -self._sign
+        self.u_sd_inj = self._sign * self.U_inj * scale
+        self._T_s = T_s
+
+
+# %%
 class SignalInjectionObserver:
     """
     Signal injection observer for synchronous machine drives.
@@ -32,9 +113,11 @@ class SignalInjectionObserver:
     U_inj : float, optional
         Injected voltage amplitude (V).
     T_s : float
-      Sampling period (s).
+        Sampling period (s).
     J : float | None, optional
         Inertia (kgm²), if not None, a speed observer is used.
+    N_inj : int, optional
+        Number of sampling periods per injection voltage half-period, defaults to 1.
 
     """
 
@@ -45,8 +128,8 @@ class SignalInjectionObserver:
         U_inj: float,
         T_s: float,
         J: float | None = None,
+        N_inj: int = 1,
     ) -> None:
-        self._T_s = T_s
         # Configure observer gains for critically damped dynamics
         if J is None:
             self.k_theta = 2 * par.n_p * alpha_o
@@ -57,43 +140,12 @@ class SignalInjectionObserver:
             k_w = 3 * alpha_o**2
             k_tau = J * alpha_o**3
 
-        # Create speed observer
         self.speed_observer = SpeedObserver(k_w, k_tau, J)
-        # State
-        self.theta_m: float = 0.0
-        # Constant error gain based on the unsaturated inductances
-        L_s = par.incr_ind_mat(0j)
-        self.k = 0.5 * L_s[0, 0] / (L_s[1, 1] - L_s[0, 0]) / par.n_p
-        self.U_inj = U_inj
-        self.u_sd_inj = U_inj
-        self._old_psi_sq: float = 0.0
-        self._older_psi_sq: float = 0.0
+        self.injection = SquareWaveInjection(par, U_inj, T_s, N_inj)
+        self.theta_m: float = 0.0  # State
         self.par = par
-        self.sensorless = True  # For compatibility reasons
 
-    def _compute_demodulation_error(self, i_s: complex) -> float:
-        """Compute mechanical position error signal."""
-        # Apply the flux map to compensate the cross saturation
-        psi_sq = complex(self.par.psi_s_dq(i_s)).imag
-
-        # Compute second derivative using finite differences
-        d_psi_sq = psi_sq - 2.0 * self._old_psi_sq + self._older_psi_sq
-
-        # Compute error signal if injection is active
-        if abs(self.u_sd_inj) > 0:
-            eps = self.k * d_psi_sq / (self.u_sd_inj * self._T_s)
-        else:
-            eps = 0.0
-
-        # Update stored values for the next sampling period
-        self._older_psi_sq = self._old_psi_sq
-        self._old_psi_sq = psi_sq
-
-        return eps
-
-    def compute_output(
-        self, u_s_ab: complex, i_s_ab: complex, theta_M_meas: float | None
-    ) -> ObserverOutputs:
+    def compute_output(self, u_s_ab: complex, i_s_ab: complex) -> ObserverOutputs:
         """Compute output."""
         # Unpack and initialize the output signals
         par = self.par
@@ -107,7 +159,7 @@ class SignalInjectionObserver:
         out.u_s = exp(-1j * out.theta_m) * u_s_ab
 
         # Compute the mechanical position error signal
-        out.eps = self._compute_demodulation_error(out.i_s)
+        out.eps = self.injection.compute_error(i_s_ab, out.theta_m)
 
         # Coordinate system angular frequency
         out.w_c = out.w_m + self.k_theta * out.eps
@@ -122,8 +174,7 @@ class SignalInjectionObserver:
         """Update the states."""
         self.speed_observer.update(T_s, out.eps, out.tau_M)
         self.theta_m = wrap(self.theta_m + T_s * out.w_c)
-        self.u_sd_inj = (-1 if self.u_sd_inj > 0 else 1) * self.U_inj
-        self._T_s = T_s
+        self.injection.update(T_s)
 
 
 # %%
@@ -133,9 +184,10 @@ class SignalInjectionController(CurrentVectorController):
 
     This class implements a square-wave signal injection for low-speed operation
     according to [#Kim2012]_. Cross-saturation errors are compensated for using flux
-    maps [#You2018]_. If the inertia of the mechanical system is provided, the speed is
-    estimated using the speed observer based on the mechanical model [#Kim2003]_,
-    otherwise the phase-locked loop is used.
+    maps [#You2018]_. A related adjustable-frequency method is presented in [#Yu2022]_.
+    If the inertia of the mechanical system is provided, the speed is estimated using
+    the speed observer based on the mechanical model [#Kim2003]_, otherwise the phase-
+    locked loop is used.
 
     Parameters
     ----------
@@ -145,6 +197,10 @@ class SignalInjectionController(CurrentVectorController):
         Current-vector control configuration.
     U_inj : float, optional
         Injected voltage amplitude (V), defaults to 250.
+    N_inj : int, optional
+        Number of sampling periods per injection voltage half-period, defaults to 1. The
+        injection frequency is `1 / (2 * N_inj * cfg.T_s)`. Reducing this frequency
+        requires reducing `cfg.alpha_o` accordingly.
 
     References
     ----------
@@ -157,6 +213,10 @@ class SignalInjectionController(CurrentVectorController):
        synchronous reluctance machines," IEEE Trans. Power Electron., 2018,
        https://doi.org/10.1109/TPEL.2017.2697209
 
+    .. [#Yu2022] Yu, Wang, "Position sensorless control of IPMSM using adjustable
+       frequency setting square-wave voltage injection," IEEE Trans. Power Electron.,
+       2022, https://doi.org/10.1109/TPEL.2022.3179611
+
     .. [#Kim2003] Kim, Harke, Lorenz, "Sensorless control of interior permanent-magnet
        machine drives with zero-phase lag position estimation," IEEE Trans. Ind. Appl.,
        2003, https://doi.org/10.1109/TIA.2003.818966
@@ -168,10 +228,12 @@ class SignalInjectionController(CurrentVectorController):
         par: SynchronousMachinePars | SaturatedSynchronousMachinePars,
         cfg: CurrentVectorControllerCfg,
         U_inj: float = 250,
+        N_inj: int = 1,
     ) -> None:
         super().__init__(par, cfg)
+        self.sensorless = True
         self.observer = SignalInjectionObserver(
-            par, cast(float, cfg.alpha_o), U_inj, cfg.T_s, cfg.J
+            par, cast(float, cfg.alpha_o), U_inj, cfg.T_s, cfg.J, N_inj
         )
 
     def compute_output(self, tau_M_ref: float, fbk: ObserverOutputs) -> References:
@@ -179,9 +241,10 @@ class SignalInjectionController(CurrentVectorController):
         ref.psi_s, ref.tau_M = self.reference_gen.compute_flux_and_torque_refs(
             ref.tau_M, fbk.w_m, fbk.u_dc
         )
-        ref.i_s = self.reference_gen.compute_current_ref(ref.psi_s, ref.tau_M)
+        ref.i_s = self.reference_gen.compute_current_ref(ref.tau_M)
         ref.u_s = (
-            self.current_ctrl.compute_output(ref.i_s, fbk.i_s) + self.observer.u_sd_inj
+            self.current_ctrl.compute_output(ref.i_s, fbk.i_s)
+            + self.observer.injection.u_sd_inj
         )
         return ref
 

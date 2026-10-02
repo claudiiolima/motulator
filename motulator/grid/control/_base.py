@@ -6,7 +6,7 @@ from typing import Callable, Protocol, Sequence
 
 from motulator.common.control._base import ControlSystem, TimeSeries
 from motulator.common.control._pwm import PWM
-from motulator.common.utils._utils import abc2complex, get_value
+from motulator.common.utils._utils import abc2complex, get_value, line2complex
 from motulator.grid.control._common import DCBusVoltageController
 from motulator.grid.model import GridConverterSystem
 
@@ -177,7 +177,7 @@ class GridConverterControlSystem(ControlSystem):
         """Get measurements from sensors."""
         u_dc = mdl.converter.meas_dc_voltage()
         i_c_ab = abc2complex(mdl.ac_filter.meas_currents())
-        u_g_ab = abc2complex(mdl.ac_filter.meas_pcc_voltages())
+        u_g_ab = line2complex(mdl.ac_filter.meas_pcc_voltages())
         return Measurements(i_c_ab, u_g_ab, u_dc)
 
     def get_feedback(self, meas: Measurements) -> Feedbacks:
@@ -229,7 +229,7 @@ class GridConverterControlSystem(ControlSystem):
         """Update controller states."""
         super().update(ref, fbk)
         self.inner_ctrl.update(ref, fbk)
-        if self.dc_bus_voltage_ctrl and ref.p_g:
+        if self.dc_bus_voltage_ctrl and ref.u_dc is not None:
             self.dc_bus_voltage_ctrl.update(ref.T_s, ref.p_g)
 
     def post_process(self) -> TimeSeries:

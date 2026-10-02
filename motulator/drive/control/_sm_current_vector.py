@@ -9,8 +9,12 @@ from motulator.common.control._base import TimeSeries
 from motulator.drive.control._sm_observers import (
     ObserverOutputs,
     create_speed_flux_observer,
+    position_error,
 )
-from motulator.drive.control._sm_reference_gen import ReferenceGenerator
+from motulator.drive.control._sm_reference_gen import (
+    ReferenceGenerator,
+    ReferenceGeneratorOnline,
+)
 from motulator.drive.utils._parameters import (
     SaturatedSynchronousMachinePars,
     SynchronousMachinePars,
@@ -93,6 +97,8 @@ class CurrentVectorControllerCfg:
     alpha_o : float, optional
         Speed estimation poles (rad/s). Defaults to 2*pi*50 if `J` is None, otherwise
         2*pi*50/3, keeping the default speed observer gain the same.
+    alpha_ref : float, optional
+        Reference generation bandwidth (rad/s), defaults to 2*pi*100.
     k_o : Callable[[float], float], optional
         Observer gain as a function of the rotor angular speed.
     k_f : Callable[[float], float], optional
@@ -110,6 +116,8 @@ class CurrentVectorControllerCfg:
         used in speed estimation.
     sensorless : bool, optional
         If True, sensorless control is used, defaults to True.
+    online_ref : bool, optional
+        If True, the online reference generation is used, defaults to False.
     T_s : float, optional
         Sampling period (s), defaults to 125e-6.
 
@@ -119,6 +127,7 @@ class CurrentVectorControllerCfg:
     alpha_c: float = 2 * pi * 200
     alpha_i: float | None = None
     alpha_o: float | None = None
+    alpha_ref: float = 2 * pi * 100
     k_o: Callable[[float], float] | None = None
     k_f: Callable[[float], float] | None = None
     psi_s_min: float | None = None
@@ -127,6 +136,7 @@ class CurrentVectorControllerCfg:
     k_mtpv: float = 0.9
     J: float | None = None
     sensorless: bool = True
+    online_ref: bool = False
     T_s: float = 125e-6
 
     def __post_init__(self) -> None:
@@ -156,13 +166,24 @@ class CurrentVectorController:
         par: SynchronousMachinePars | SaturatedSynchronousMachinePars,
         cfg: CurrentVectorControllerCfg,
     ) -> None:
-        self.reference_gen = ReferenceGenerator(
-            par, cfg.i_s_max, cfg.psi_s_min, cfg.psi_s_max, cfg.k_u, cfg.k_mtpv
+        reference_generator = (
+            ReferenceGeneratorOnline if cfg.online_ref else ReferenceGenerator
+        )
+        self.reference_gen = reference_generator(
+            par,
+            cfg.i_s_max,
+            cfg.psi_s_min,
+            cfg.psi_s_max,
+            cfg.k_u,
+            cfg.k_mtpv,
+            cfg.alpha_ref,
         )
         self.current_ctrl = CurrentController(par, cfg.alpha_c, cfg.alpha_i)
         self.observer = create_speed_flux_observer(
             par, cast(float, cfg.alpha_o), cfg.k_o, cfg.k_f, cfg.sensorless, cfg.J
         )
+        self.par = par
+        self.cfg = cfg
         self.sensorless = cfg.sensorless
         self.T_s = cfg.T_s
 
@@ -174,7 +195,12 @@ class CurrentVectorController:
         theta_M_meas: float | None,
     ) -> ObserverOutputs:
         """Get the feedback signals."""
-        return self.observer.compute_output(u_s_ab, i_s_ab, theta_M_meas)
+        if self.sensorless:
+            return self.observer.compute_output(u_s_ab, i_s_ab)
+        if theta_M_meas is None:
+            raise ValueError("Rotor angle must be provided in sensored mode")
+        eps = position_error(self.par.n_p, theta_M_meas, self.observer.theta_m)
+        return self.observer.compute_output(u_s_ab, i_s_ab, eps, 1.0)
 
     def compute_output(self, tau_M_ref: float, fbk: ObserverOutputs) -> References:
         """Compute references."""
@@ -182,7 +208,7 @@ class CurrentVectorController:
         ref.psi_s, ref.tau_M = self.reference_gen.compute_flux_and_torque_refs(
             ref.tau_M, fbk.w_m, fbk.u_dc
         )
-        ref.i_s = self.reference_gen.compute_current_ref(ref.psi_s, ref.tau_M)
+        ref.i_s = self.reference_gen.compute_current_ref(ref.tau_M)
         ref.u_s = self.current_ctrl.compute_output(ref.i_s, fbk.i_s)
         return ref
 
@@ -190,6 +216,7 @@ class CurrentVectorController:
         """Update states."""
         self.observer.update(ref.T_s, fbk)
         self.current_ctrl.update(ref.T_s, fbk.u_s, fbk.w_c)
+        self.reference_gen.update(ref.T_s)
 
     def post_process(self, ts: TimeSeries) -> None:
         """Post-process controller time series."""
