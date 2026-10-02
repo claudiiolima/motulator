@@ -53,9 +53,13 @@ class GridConverterSystem(Model):
         # Define connections
         self.connections = {
             (self.converter, "i_c_ab"): (self.ac_filter, "i_c_ab"),
+            (self.converter, "u_c_open_ab"): (self.ac_filter, "u_c_open_ab"),
             (self.ac_filter, "u_c_ab"): (self.converter, "u_c_ab"),
             (self.ac_filter, "e_g_ab"): (self.ac_source, "e_g_ab"),
         }
 
         # Define ZOH inputs separately
-        self.zoh_connections = {(self.converter, "q_c_ab"): "sw_state"}
+        self.zoh_connections = {
+            (self.converter, "q_c_ab"): "sw_state",
+            (self.converter, "converter_mode"): "converter_mode",
+        }

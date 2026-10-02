@@ -1,5 +1,6 @@
 """Continuous-time machine drive models."""
 
+from motulator.common._converter_mode import ConverterMode
 from motulator.common.model._converter import FrequencyConverter, VoltageSourceConverter
 from motulator.common.model._simulation import Simulation
 from motulator.drive.model._drive import Drive
@@ -19,6 +20,7 @@ from motulator.drive.utils._parameters import (
 )
 
 __all__ = [
+    "ConverterMode",
     "Drive",
     "ExternalRotorSpeed",
     "FrequencyConverter",

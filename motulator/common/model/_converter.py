@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from motulator.common._converter_mode import ConverterMode
 from motulator.common.model._base import Subsystem
 from motulator.common.utils._utils import abc2complex, complex2abc, empty_array
 
@@ -22,8 +23,10 @@ from motulator.common.utils._utils import abc2complex, complex2abc, empty_array
 class Inputs:
     """Input variables."""
 
-    q_c_ab: complex = 0j
+    q_c_ab: complex | np.ndarray = 0j
+    converter_mode: ConverterMode = ConverterMode.NORMAL
     i_c_ab: complex = 0j
+    u_c_open_ab: complex = 0j
     i_dc: float | Callable[[float], float] | None = None
 
 
@@ -39,15 +42,31 @@ class VoltageSourceConverter(Subsystem):
     """
     Lossless three-phase voltage-source converter with constant DC-bus voltage.
 
+    The switching input can be a complex duty-ratio or switching-state vector, or an
+    explicit three-phase state array. The separate :class:`ConverterMode` input either
+    respects this switching input or overrides it with Hi-Z or active short. In an
+    explicit phase-state array, 1 turns on the high-side transistor, 0 turns on the
+    low-side transistor, and -1 turns off both transistors. In the latter case, the
+    antiparallel diodes determine the pole voltage from the phase-current direction.
+
     Parameters
     ----------
     u_dc : float
         DC-bus voltage (V).
+    i_tol : float, optional
+        Current threshold for releasing the antiparallel diodes in Hi-Z (A), defaults
+        to 1e-3.
+
+    Notes
+    -----
+    The semiconductor devices are ideal. The controlled switches can represent IGBTs
+    or MOSFETs; each switch includes an antiparallel diode.
 
     """
 
-    def __init__(self, u_dc: float) -> None:
+    def __init__(self, u_dc: float, i_tol: float = 1e-3) -> None:
         self.u_dc = u_dc
+        self.i_tol = i_tol
         self.inp: Inputs = Inputs()
         self.out: Outputs = Outputs(u_c_ab=0j, u_dc=u_dc)
         self.state = None
@@ -57,13 +76,78 @@ class VoltageSourceConverter(Subsystem):
         """Set external DC current (A)."""
         raise NotImplementedError
 
+    @staticmethod
+    def _get_phase_states(
+        q_c_ab: Any, converter_mode: ConverterMode
+    ) -> np.ndarray | None:
+        """Resolve the converter mode and explicit phase-leg states."""
+        mode = ConverterMode(converter_mode)
+        if mode is not ConverterMode.NORMAL:
+            states = {
+                ConverterMode.ALL_PHASE_OPEN: -1,
+                ConverterMode.ACTIVE_SHORT_LOW: 0,
+                ConverterMode.ACTIVE_SHORT_HIGH: 1,
+            }
+            return np.full(3, states[mode], dtype=int)
+
+        if np.isscalar(q_c_ab):
+            return None
+
+        q_c_abc = np.asarray(q_c_ab)
+        if q_c_abc.shape != (3,):
+            raise ValueError("Phase switching states must have shape (3,)")
+        if not np.all(np.isin(q_c_abc, (-1, 0, 1))):
+            raise ValueError("Phase switching states must be -1, 0, or 1")
+        return q_c_abc.astype(int)
+
+    @staticmethod
+    def _get_open_circuit_pole_voltages(inp: Any, u_dc: float) -> np.ndarray:
+        """Get floating pole voltages and apply the diode rail clamps."""
+        u_open_abc = complex2abc(inp.u_c_open_ab)
+        # A three-wire load leaves the common-mode voltage free. Center the phase
+        # voltages between the rails before applying the antiparallel-diode clamps.
+        u_0 = 0.5 * (u_dc - np.max(u_open_abc) - np.min(u_open_abc))
+        return np.clip(u_open_abc + u_0, 0.0, u_dc)
+
+    def compute_output_voltage(self, inp: Any, u_dc: float | None = None) -> Any:
+        """Compute terminal voltage including floating and diode-conduction states."""
+        if u_dc is None:
+            u_dc = self.out.u_dc
+        q_c_abc = self._get_phase_states(inp.q_c_ab, inp.converter_mode)
+        if q_c_abc is None:
+            return inp.q_c_ab * u_dc
+
+        i_c_abc = complex2abc(inp.i_c_ab)
+        u_open_abc = self._get_open_circuit_pole_voltages(inp, u_dc)
+        u_c_abc = q_c_abc.astype(float) * u_dc
+        is_all_phase_open = q_c_abc == -1
+        # Positive current flows out through the low-side diode and negative current
+        # flows in through the high-side diode. At zero current, neither diode conducts
+        # and the terminal floats at the load-induced open-circuit voltage.
+        u_hiz_abc = np.where(
+            i_c_abc > self.i_tol, 0.0, np.where(i_c_abc < -self.i_tol, u_dc, u_open_abc)
+        )
+        u_c_abc = np.where(is_all_phase_open, u_hiz_abc, u_c_abc)
+        return abc2complex(u_c_abc)
+
+    def compute_effective_switching_state(
+        self, inp: Any, u_dc: float | None = None
+    ) -> Any:
+        """Compute effective switching vector, including floating pole voltages."""
+        if u_dc is None:
+            u_dc = self.out.u_dc
+        if u_dc == 0:
+            return 0j
+        return self.compute_output_voltage(inp, u_dc) / u_dc
+
     def compute_internal_dc_current(self, inp: Any) -> Any:
-        """Compute the internal DC current (A)."""
-        return 1.5 * np.real(inp.q_c_ab * np.conj(inp.i_c_ab))
+        """Compute the internal DC current (A), including diode conduction."""
+        q_eff_ab = self.compute_effective_switching_state(inp)
+        return 1.5 * np.real(q_eff_ab * np.conj(inp.i_c_ab))
 
     def set_outputs(self, t: float) -> None:
         """Set output variables."""
-        self.out.u_c_ab = self.inp.q_c_ab * self.out.u_dc
+        self.out.u_c_ab = self.compute_output_voltage(self.inp)
 
     def meas_dc_voltage(self) -> float:
         """Measure converter DC-bus voltage (V)."""
@@ -88,7 +172,10 @@ class VoltageSourceConverterTimeSeries[T: VoltageSourceConverter]:
     subsystem: InitVar[T]
     u_dc: np.ndarray = field(default_factory=empty_array)
     q_c_ab: np.ndarray = field(default_factory=empty_array)
+    converter_mode: np.ndarray = field(default_factory=empty_array)
     i_c_ab: np.ndarray = field(default_factory=empty_array)
+    u_c_open_ab: np.ndarray = field(default_factory=empty_array)
+    q_eff_ab: np.ndarray = field(default_factory=empty_array)
     u_c_ab: np.ndarray = field(default_factory=empty_array)
     i_dc_int: np.ndarray = field(default_factory=empty_array)
 
@@ -96,12 +183,37 @@ class VoltageSourceConverterTimeSeries[T: VoltageSourceConverter]:
         self.u_dc = np.full(np.size(t), subsystem.u_dc)
 
     def compute_zoh_input_derived_signals(self, t: np.ndarray, subsystem: T) -> None:
-        """Compute zero-order hold derived signals."""
-        self.u_c_ab = self.q_c_ab * self.u_dc
+        """Resolve floating terminals, diode conduction, and derived signals."""
+        if np.size(self.u_c_open_ab) != np.size(self.i_c_ab):
+            self.u_c_open_ab = np.zeros_like(self.i_c_ab)
+        self.u_c_ab = np.array(
+            [
+                subsystem.compute_output_voltage(
+                    Inputs(
+                        q_c_ab=q_c_ab,
+                        converter_mode=converter_mode,
+                        i_c_ab=i_c_ab,
+                        u_c_open_ab=u_c_open_ab,
+                    ),
+                    u_dc,
+                )
+                for q_c_ab, converter_mode, i_c_ab, u_c_open_ab, u_dc in zip(
+                    self.q_c_ab,
+                    self.converter_mode,
+                    self.i_c_ab,
+                    self.u_c_open_ab,
+                    self.u_dc,
+                    strict=True,
+                )
+            ]
+        )
+        self.q_eff_ab = np.divide(
+            self.u_c_ab, self.u_dc, out=np.zeros_like(self.u_c_ab), where=self.u_dc != 0
+        )
+        self.i_dc_int = 1.5 * np.real(self.q_eff_ab * np.conj(self.i_c_ab))
 
     def compute_input_derived_signals(self, t: np.ndarray, subsystem: T) -> None:
-        """Process input time series."""
-        self.i_dc_int = subsystem.compute_internal_dc_current(self)
+        """Default empty implementation."""
 
 
 # %%

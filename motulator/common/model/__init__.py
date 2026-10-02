@@ -1,5 +1,6 @@
 """Model package."""
 
+from motulator.common._converter_mode import ConverterMode
 from motulator.common.model._base import (
     Model,
     ModelTimeSeries,
@@ -11,6 +12,7 @@ from motulator.common.model._simulation import Simulation, SimulationResults, So
 
 __all__ = [
     "CarrierComparison",
+    "ConverterMode",
     "Model",
     "ModelTimeSeries",
     "Simulation",

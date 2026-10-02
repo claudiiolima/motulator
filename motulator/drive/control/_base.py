@@ -132,6 +132,14 @@ class VectorControlSystem(ControlSystem):
         """
         self.ext_ref.w_M = ref_fcn
 
+    def on_disabled(self, mdl: Drive) -> None:
+        """Track the physical converter voltage while modulation is overridden."""
+        self.pwm.synchronize(mdl.converter.out.u_c_ab)
+
+    def flying_start(self, mdl: Drive) -> None:
+        """Synchronize voltage feedback before normal modulation resumes."""
+        self.pwm.synchronize(mdl.converter.out.u_c_ab)
+
     def get_measurement(self, mdl: Drive) -> Measurements:
         """Get measurements from sensors."""
         u_dc = mdl.converter.meas_dc_voltage()
@@ -243,6 +251,14 @@ class VHzControlSystem(ControlSystem):
 
         """
         self.ext_ref.w_M = ref_fcn
+
+    def on_disabled(self, mdl: Drive) -> None:
+        """Track the physical converter voltage while modulation is overridden."""
+        self.pwm.synchronize(mdl.converter.out.u_c_ab)
+
+    def flying_start(self, mdl: Drive) -> None:
+        """Synchronize voltage feedback before normal modulation resumes."""
+        self.pwm.synchronize(mdl.converter.out.u_c_ab)
 
     def get_measurement(self, mdl: Drive) -> Measurements:
         """Get measurements."""

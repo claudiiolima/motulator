@@ -66,6 +66,55 @@ label: DC_current
     \idc' = \qA \iA + \qB \iB + \qC \iC
 ```
 
+(semiconductor-safety-states)=
+
+## Semiconductor and Safety States
+
+The converter also supports explicit semiconductor states. The controlled devices can
+represent ideal IGBTs or MOSFETs, and each device has an antiparallel diode. A phase-leg
+command is 1 for the high-side device, 0 for the low-side device, and -1 when both
+devices are off. If phase current is flowing, it commutates naturally to a diode:
+positive converter current uses the low-side diode and negative current uses the
+high-side diode. Once the current reaches zero, neither diode conducts and the terminal
+floats at the open-circuit voltage imposed by the connected electrical subsystem. For
+example, a synchronous machine contributes its induced speed voltage (back-EMF), while
+an LC filter contributes its capacitor voltage. A diode starts conducting again if this
+floating voltage reaches either DC-bus rail. Consequently, the electrical state
+derivatives continue to be solved from the actual terminal voltage in high impedance
+instead of replacing the converter voltage with zero.
+
+The {class}`motulator.common.model.ConverterMode` enumeration defines the converter
+operating mode:
+
+- `NORMAL` respects the switching states generated from the duty ratios;
+- `ALL_PHASE_OPEN` turns off all six controlled devices;
+- `ACTIVE_SHORT_LOW` turns on all three low-side devices; and
+- `ACTIVE_SHORT_HIGH` turns on all three high-side devices.
+
+The controller output `d_abc` always remains a sequence of three floating-point duty
+ratios. It continues through the computational delay and PWM stages independently of
+the operating mode. The control-system attribute `converter_mode` is sampled once per
+control cycle and passed to the converter as a separate zero-order-held input. Any mode
+other than `NORMAL` overrides the switching states only at the converter model.
+
+The mode can be assigned as a constant or as a function of time. For example, the
+following selects high impedance from 1.1 s to 1.3 s and then returns to normal
+modulation:
+
+```python
+from motulator.common.model import ConverterMode
+
+ctrl.set_converter_mode(
+    lambda t: ConverterMode.ALL_PHASE_OPEN if 1.1 <= t < 1.3 else ConverterMode.NORMAL
+)
+```
+
+Both active-short variants produce a zero line-voltage vector, while remaining distinct
+from high impedance. Explicit arrays such as `[-1, 0, 1]` can alternatively be assigned
+directly as low-level converter switching states. Simulation results expose
+`converter_mode` and `q_eff_ab`, the latter being the effective switching-state vector
+after diode conduction has been resolved.
+
 ## Carrier Comparison
 
 In pulse-width modulation (PWM), carrier comparison is commonly used to generate instantaneous switching state signals $\qA$, $\qB$, and $\qC$ from duty ratios $\dA$, $\dB$, and $\dC$. The duty ratios are continuous signals in the range [0, 1] while the switching states are either 0 or 1.

@@ -165,6 +165,14 @@ class GridConverterControlSystem(ControlSystem):
         """
         self.ext_ref.u_dc = ref_fcn
 
+    def on_disabled(self, mdl: GridConverterSystem) -> None:
+        """Track the physical converter voltage while modulation is overridden."""
+        self.pwm.synchronize(mdl.converter.out.u_c_ab)
+
+    def flying_start(self, mdl: GridConverterSystem) -> None:
+        """Synchronize voltage feedback before normal modulation resumes."""
+        self.pwm.synchronize(mdl.converter.out.u_c_ab)
+
     def get_measurement(self, mdl: GridConverterSystem) -> Measurements:
         """Get measurements from sensors."""
         u_dc = mdl.converter.meas_dc_voltage()

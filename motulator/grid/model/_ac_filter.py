@@ -31,6 +31,7 @@ class LFilterOutputs:
     """Base class for outputs."""
 
     i_c_ab: complex
+    u_c_open_ab: complex
 
 
 @dataclass
@@ -83,7 +84,7 @@ class LFilter(Subsystem):
         # are important, these initial conditions can be set to appropriate values.
         self.inp: Inputs = Inputs()
         self.state: LFilterStates = LFilterStates()
-        self.out: LFilterOutputs = LFilterOutputs(self.state.i_c_ab)
+        self.out: LFilterOutputs = LFilterOutputs(self.state.i_c_ab, 0j)
         self._history: LFilterStateHistory = LFilterStateHistory()
 
     def pcc_voltage(self, state: Any, inp: Any) -> Any:
@@ -98,6 +99,7 @@ class LFilter(Subsystem):
     def set_outputs(self, t: float) -> None:
         """Set output variables."""
         self.out.i_c_ab = self.state.i_c_ab
+        self.out.u_c_open_ab = self.inp.e_g_ab
 
     def rhs(self, t: float) -> list[complex]:
         """Compute the state derivatives."""
@@ -136,11 +138,18 @@ class LFilterTimeSeries(SubsystemTimeSeries):
     # Outputs
     u_g_ab: np.ndarray = field(default_factory=empty_array)
     i_g_ab: np.ndarray = field(default_factory=empty_array)
+    u_c_open_ab: np.ndarray = field(default_factory=empty_array)
 
     def __post_init__(self, t: np.ndarray, subsystem: LFilter) -> None:
         """Compute output time series from the states."""
         self.i_c_ab = np.array(subsystem._history.i_c_ab)
         self.i_g_ab = self.i_c_ab
+
+    def compute_zoh_input_derived_signals(
+        self, t: np.ndarray, subsystem: LFilter
+    ) -> None:
+        """Compute the converter-terminal open-circuit voltage."""
+        self.u_c_open_ab = self.e_g_ab
 
     def compute_input_derived_signals(self, t: np.ndarray, subsystem: LFilter) -> None:
         """Compute direct feedthrough time series."""
@@ -164,6 +173,7 @@ class LCLFilterOutputs:
     i_c_ab: complex
     u_f_ab: complex
     i_g_ab: complex
+    u_c_open_ab: complex
 
 
 @dataclass
@@ -227,7 +237,7 @@ class LCLFilter(Subsystem):
         # signal for the control system.
         self.inp: Inputs = Inputs(u_f0_ab, u_f0_ab)
         self.out: LCLFilterOutputs = LCLFilterOutputs(
-            self.state.i_c_ab, self.state.u_f_ab, self.state.i_g_ab
+            self.state.i_c_ab, self.state.u_f_ab, self.state.i_g_ab, self.state.u_f_ab
         )
         self._history: LCLFilterStateHistory = LCLFilterStateHistory()
 
@@ -247,6 +257,7 @@ class LCLFilter(Subsystem):
         out.i_c_ab = state.i_c_ab
         out.u_f_ab = state.u_f_ab
         out.i_g_ab = state.i_g_ab
+        out.u_c_open_ab = state.u_f_ab
 
     def rhs(self, t: float) -> list[complex]:
         """Compute the state derivatives."""
@@ -298,12 +309,14 @@ class LCLFilterTimeSeries(SubsystemTimeSeries):
     e_g_ab: np.ndarray = field(default_factory=empty_array)
     # Outputs
     u_g_ab: np.ndarray = field(default_factory=empty_array)
+    u_c_open_ab: np.ndarray = field(default_factory=empty_array)
 
     def __post_init__(self, t: np.ndarray, subsystem: LCLFilter) -> None:
         """Compute output time series from the states."""
         self.i_c_ab = np.array(subsystem._history.i_c_ab)
         self.i_g_ab = np.array(subsystem._history.i_g_ab)
         self.u_f_ab = np.array(subsystem._history.u_f_ab)
+        self.u_c_open_ab = self.u_f_ab
 
     def compute_input_derived_signals(
         self, t: np.ndarray, subsystem: LCLFilter

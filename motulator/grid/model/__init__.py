@@ -1,5 +1,6 @@
 """Continuous-time grid converter models."""
 
+from motulator.common._converter_mode import ConverterMode
 from motulator.common.model._simulation import Simulation
 from motulator.grid.model._converter_system import (
     CapacitiveDCBusConverter,
@@ -13,6 +14,7 @@ from motulator.grid.model._converter_system import (
 
 __all__ = [
     "CapacitiveDCBusConverter",
+    "ConverterMode",
     "GridConverterSystem",
     "LCLFilter",
     "LFilter",

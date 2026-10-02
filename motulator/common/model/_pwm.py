@@ -20,7 +20,7 @@ class PWM(Protocol):
         self, T_s: float, d_abc: Sequence[float]
     ) -> tuple[SwitchingTimes, SwitchingStates]:
         """
-        Convert duty ratios to switching states and their durations.
+        Convert duty ratios to switching states.
 
         Parameters
         ----------
@@ -46,7 +46,7 @@ class ZOH(PWM):
 
     def __call__(
         self, T_s: float, d_abc: Sequence[float]
-    ) -> tuple[SwitchingTimes, ComplexSwitchingStates]:
+    ) -> tuple[SwitchingTimes, SwitchingStates]:
         # Shape the output arrays to be compatible with the solver
         t_steps = np.array([T_s])
         return t_steps, np.array([abc2complex(d_abc)])
@@ -140,6 +140,7 @@ class CarrierComparison(PWM):
         `d_a == d_b`) lead to zeroes in `t_steps`.
 
         """
+
         # Quantize the duty ratios to N levels
         d_abc_arr = np.round(self.N * np.array(d_abc)) / self.N
 

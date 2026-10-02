@@ -202,6 +202,11 @@ class PWM:
         """
         return self.realized_voltage
 
+    def synchronize(self, u_c_ab: complex) -> None:
+        """Synchronize the realized-voltage states to a physical voltage."""
+        self.realized_voltage = u_c_ab
+        self._old_u_c_ab = u_c_ab
+
     def update(self, u_c_ab: complex) -> None:
         """Update the realized voltage."""
         self.realized_voltage = 0.5 * (self._old_u_c_ab + u_c_ab)

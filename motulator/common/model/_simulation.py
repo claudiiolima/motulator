@@ -8,6 +8,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from tqdm import tqdm
 
+from motulator.common._converter_mode import ConverterMode
 from motulator.common.control._base import ControlSystem
 from motulator.common.model._base import Model, ModelTimeSeries
 
@@ -160,11 +161,16 @@ class Simulation:
             T_s, ref_duty_ratio = self.ctrl(self.mdl)
             duty_ratio = self.mdl.delay(ref_duty_ratio)
             t_steps, sw_states = self.mdl.pwm(T_s, duty_ratio)
+            converter_mode = getattr(
+                self.ctrl, "active_converter_mode", ConverterMode.NORMAL
+            )
+            converter_mode = ConverterMode(converter_mode)
 
             # Loop over the sampling period T_s
             for i, t_step in enumerate(t_steps):
                 if t_step > 0:
-                    # Set the switching state and get initial values
+                    # Set the converter mode and switching state
+                    self.mdl.set_zoh_input("converter_mode", converter_mode)
                     self.mdl.set_zoh_input("sw_state", sw_states[i])
                     self.mdl.interconnect()
                     state0 = self.mdl.get_initial_values()

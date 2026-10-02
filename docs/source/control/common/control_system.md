@@ -13,6 +13,15 @@ A protocol for discrete-time control systems is available in {class}`motulator.c
 
 Using this protocol is not compulsory, but it may simplify the implementation of new control systems.
 
+The converter operating mode is independent of the duty-ratio output. The `d_abc`
+signal always remains a sequence of three floating-point duty ratios and is processed
+by the computational delay and PWM stages. The separate control-system attribute
+`converter_mode` selects whether the converter respects the generated switching states
+or overrides them with high impedance or active short. Its default value is
+`ConverterMode.NORMAL`; it can also be assigned a function of time. See
+{ref}`Semiconductor and Safety States <semiconductor-safety-states>` for the available
+modes and an example.
+
 ## Data Flow and Storage
 
 [Figure 1](fig:overall_system) illustrates the structure and data flow in a typical simulation model. [Figure 2](fig:discrete_control_system) exemplifies an internal structure of a typical control system. The text in italics refers to the default object names used in the software.

@@ -24,6 +24,7 @@ class Outputs:
 
     i_c_ab: complex
     u_f_ab: complex
+    u_c_open_ab: complex
 
 
 @dataclass
@@ -63,13 +64,16 @@ class LCFilter(Subsystem):
         self.R_f = R_f
         self.state: States = States()
         self.inp: Inputs = Inputs()
-        self.out: Outputs = Outputs(self.state.i_c_ab, self.state.u_f_ab)
+        self.out: Outputs = Outputs(
+            self.state.i_c_ab, self.state.u_f_ab, self.state.u_f_ab
+        )
         self._history: StateHistory = StateHistory()
 
     def set_outputs(self, t: float) -> None:
         """Set output variables."""
         self.out.i_c_ab = self.state.i_c_ab
         self.out.u_f_ab = self.state.u_f_ab
+        self.out.u_c_open_ab = self.state.u_f_ab
 
     def rhs(self, t: float) -> list[complex]:
         """Compute state derivatives."""
@@ -102,8 +106,10 @@ class LCFilterTimeSeries(SubsystemTimeSeries):
     subsystem: InitVar[LCFilter]
     i_c_ab: np.ndarray = field(default_factory=empty_array)
     u_f_ab: np.ndarray = field(default_factory=empty_array)
+    u_c_open_ab: np.ndarray = field(default_factory=empty_array)
 
     def __post_init__(self, t: np.ndarray, subsystem: LCFilter) -> None:
         """Compute output time series from the states."""
         self.i_c_ab = np.array(subsystem._history.i_c_ab)
         self.u_f_ab = np.array(subsystem._history.u_f_ab)
+        self.u_c_open_ab = self.u_f_ab

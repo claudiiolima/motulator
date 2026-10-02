@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
+
+from motulator.common._converter_mode import ConverterMode
 
 
 # %%
@@ -12,7 +14,7 @@ class References(Protocol):
     """Protocol defining the interface for reference signals."""
 
     T_s: float  # Sampling period for next control cycle
-    d_abc: Sequence[float]  # Duty ratios for the next control cycle
+    d_abc: Sequence[float]  # Duty ratios for three-phase PWM
 
 
 @dataclass
@@ -36,15 +38,53 @@ class ControlSystem[Mdl, Meas, Ref: References, Fbk](Protocol):
     """
 
     t: float
+    converter_mode: ConverterMode | Callable[[float], ConverterMode]
+    active_converter_mode: ConverterMode
+    enabled: bool
     # Time and signal history
     _t: list[float]
     _history: dict[str, dict[str, list]]
 
     def __init__(self) -> None:
         self.t: float = 0.0  # Controller time
+        self.converter_mode = ConverterMode.NORMAL
+        self.active_converter_mode = ConverterMode.NORMAL
+        self.enabled = True
         # Initialize the data buffer
         self._t: list[float] = []
         self._history: dict[str, dict[str, list]] = {}
+
+    def set_converter_mode(
+        self, mode: ConverterMode | Callable[[float], ConverterMode]
+    ) -> None:
+        """Set the converter operating mode or its time-dependent reference."""
+        self.converter_mode = mode
+
+    def resolve_converter_mode(self, t: float) -> ConverterMode:
+        """Resolve the converter mode reference at the given time."""
+        mode = (
+            self.converter_mode(t)
+            if callable(self.converter_mode)
+            else self.converter_mode
+        )
+        return ConverterMode(mode)
+
+    def on_disabled(self, mdl: Mdl) -> None:
+        """Track the physical system while converter control is disabled."""
+
+    def flying_start(self, mdl: Mdl) -> None:
+        """Synchronize control states before re-enabling normal modulation."""
+
+    def _prepare_converter_mode(self, mdl: Mdl) -> None:
+        """Update the enable state and run mode-transition hooks."""
+        was_enabled = self.enabled
+        t = getattr(mdl, "t0", self.t)
+        self.active_converter_mode = self.resolve_converter_mode(t)
+        self.enabled = self.active_converter_mode is ConverterMode.NORMAL
+        if not self.enabled:
+            self.on_disabled(mdl)
+        elif not was_enabled:
+            self.flying_start(mdl)
 
     def get_measurement(self, mdl: Mdl) -> Meas:
         """Get measurements from the model."""
@@ -74,6 +114,7 @@ class ControlSystem[Mdl, Meas, Ref: References, Fbk](Protocol):
 
     def run_control_loop(self, mdl: Mdl) -> tuple[float, Sequence[float]]:
         """Run the default control loop, can be overridden."""
+        self._prepare_converter_mode(mdl)
         meas = self.get_measurement(mdl)
         fbk = self.get_feedback(meas)
         ref = self.compute_output(fbk)

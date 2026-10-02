@@ -62,6 +62,7 @@ class Drive(Model):
             # Direct connections without LC filter
             self.connections = {
                 (self.converter, "i_c_ab"): (self.machine, "i_s_ab"),
+                (self.converter, "u_c_open_ab"): (self.machine, "u_s_open_ab"),
                 (self.machine, "u_s_ab"): (self.converter, "u_c_ab"),
                 (self.machine, "w_M"): (self.mechanics, "w_M"),
                 (self.mechanics, "tau_M"): (self.machine, "tau_M"),
@@ -71,6 +72,7 @@ class Drive(Model):
             self.subsystems.append(self.lc_filter)
             self.connections = {
                 (self.converter, "i_c_ab"): (self.lc_filter, "i_c_ab"),
+                (self.converter, "u_c_open_ab"): (self.lc_filter, "u_c_open_ab"),
                 (self.lc_filter, "i_f_ab"): (self.machine, "i_s_ab"),
                 (self.lc_filter, "u_c_ab"): (self.converter, "u_c_ab"),
                 (self.machine, "u_s_ab"): (self.lc_filter, "u_f_ab"),
@@ -79,4 +81,7 @@ class Drive(Model):
             }
 
         # Define ZOH inputs separately
-        self.zoh_connections = {(self.converter, "q_c_ab"): "sw_state"}
+        self.zoh_connections = {
+            (self.converter, "q_c_ab"): "sw_state",
+            (self.converter, "converter_mode"): "converter_mode",
+        }

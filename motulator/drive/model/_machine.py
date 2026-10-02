@@ -38,6 +38,7 @@ class InductionMachineOutputs:
     i_s_ab: complex
     i_r_ab: complex
     tau_M: float
+    u_s_open_ab: complex
 
 
 @dataclass
@@ -93,7 +94,7 @@ class InductionMachine(Subsystem):
         self.state: InductionMachineStates = InductionMachineStates()
         i_s_ab, i_r_ab, tau_M = self.compute_outputs(self.state)
         self.out: InductionMachineOutputs = InductionMachineOutputs(
-            i_s_ab=i_s_ab, i_r_ab=i_r_ab, tau_M=tau_M
+            i_s_ab=i_s_ab, i_r_ab=i_r_ab, tau_M=tau_M, u_s_open_ab=0j
         )
         self._history: InductionMachineStateHistory = InductionMachineStateHistory()
 
@@ -105,11 +106,22 @@ class InductionMachine(Subsystem):
         tau_M = 1.5 * self.par.n_p * np.imag(i_s_ab * np.conj(state.psi_s_ab))
         return i_s_ab, i_r_ab, tau_M
 
+    def compute_open_circuit_voltage(self, state: Any, inp: Any) -> Any:
+        """Compute the stator terminal voltage at zero stator current."""
+        L_s = get_value(self.par.L_s, abs(state.psi_s_ab))
+        gamma = L_s / (L_s + self.par.L_ell)
+        i_r_ab = (state.psi_r_ab - state.psi_s_ab) / self.par.L_ell
+        d_psi_r_ab = (
+            -self.par.R_r * i_r_ab + 1j * self.par.n_p * inp.w_M * state.psi_r_ab
+        )
+        return gamma * d_psi_r_ab
+
     def set_outputs(self, t: float) -> None:
         """Set output variables."""
         self.out.i_s_ab, self.out.i_r_ab, self.out.tau_M = self.compute_outputs(
             self.state
         )
+        self.out.u_s_open_ab = self.compute_open_circuit_voltage(self.state, self.inp)
 
     def rhs(self, t: float) -> list[complex]:
         """Compute state derivatives."""
@@ -142,6 +154,7 @@ class InductionMachineTimeSeries(SubsystemTimeSeries):
     i_s_ab: np.ndarray = field(default_factory=empty_array)
     i_r_ab: np.ndarray = field(default_factory=empty_array)
     tau_M: np.ndarray = field(default_factory=empty_array)
+    u_s_open_ab: np.ndarray = field(default_factory=empty_array)
     # Inputs
     u_s_ab: np.ndarray = field(default_factory=empty_array)
     w_M: np.ndarray = field(default_factory=empty_array)
@@ -158,6 +171,13 @@ class InductionMachineTimeSeries(SubsystemTimeSeries):
         # Inverse-Γ quantities
         gamma = L_s / (L_s + subsystem.par.L_ell)
         self.psi_R_ab = gamma * self.psi_r_ab
+
+    def compute_zoh_input_derived_signals(
+        self, t: np.ndarray, subsystem: InductionMachine
+    ) -> None:
+        """Compute the open-circuit voltage before converter post-processing."""
+        self.w_m = subsystem.par.n_p * self.w_M
+        self.u_s_open_ab = subsystem.compute_open_circuit_voltage(self, self)
 
     def compute_input_derived_signals(
         self, t: np.ndarray, subsystem: InductionMachine
@@ -182,6 +202,7 @@ class SynchronousMachineOutputs:
     i_s_ab: complex
     i_s_dq: complex
     tau_M: float
+    u_s_open_ab: complex
 
 
 @dataclass
@@ -235,7 +256,7 @@ class SynchronousMachine(Subsystem):
         self.state: SynchronousMachineStates = SynchronousMachineStates(par)
         i_s_dq, i_s_ab, tau_M = self.compute_outputs(self.state)
         self.out: SynchronousMachineOutputs = SynchronousMachineOutputs(
-            i_s_ab=i_s_ab, i_s_dq=i_s_dq, tau_M=tau_M
+            i_s_ab=i_s_ab, i_s_dq=i_s_dq, tau_M=tau_M, u_s_open_ab=0j
         )
         self._history: SynchronousMachineStateHistory = SynchronousMachineStateHistory()
 
@@ -246,11 +267,19 @@ class SynchronousMachine(Subsystem):
         tau_M = self.par.n_p * tau_m
         return i_s_dq, i_s_ab, tau_M
 
+    def compute_open_circuit_voltage(self, state: Any, inp: Any) -> Any:
+        """Compute the induced terminal voltage for an open stator circuit."""
+        w_m = self.par.n_p * inp.w_M
+        # In rotor coordinates, j*w_m*psi_s cancels the speed-voltage term in
+        # d_psi_s_dq. At zero current this is the PM back-EMF.
+        return 1j * w_m * state.psi_s_dq * state.exp_j_theta_m
+
     def set_outputs(self, t: float) -> None:
         """Set output variables."""
         self.out.i_s_dq, self.out.i_s_ab, self.out.tau_M = self.compute_outputs(
             self.state
         )
+        self.out.u_s_open_ab = self.compute_open_circuit_voltage(self.state, self.inp)
 
     def rhs(self, t: float) -> list[complex]:
         """Compute state derivatives."""
@@ -285,6 +314,7 @@ class SynchronousMachineTimeSeries(SubsystemTimeSeries):
     # Outputs
     i_s_ab: np.ndarray = field(default_factory=empty_array)
     tau_M: np.ndarray = field(default_factory=empty_array)
+    u_s_open_ab: np.ndarray = field(default_factory=empty_array)
     # Inputs
     u_s_ab: np.ndarray = field(default_factory=empty_array)
     w_M: np.ndarray = field(default_factory=empty_array)
@@ -299,6 +329,13 @@ class SynchronousMachineTimeSeries(SubsystemTimeSeries):
         self.theta_m = np.angle(self.exp_j_theta_m)
         self.i_s_dq, self.i_s_ab, self.tau_M = subsystem.compute_outputs(self)
         self.psi_s_ab = self.exp_j_theta_m * self.psi_s_dq
+
+    def compute_zoh_input_derived_signals(
+        self, t: np.ndarray, subsystem: SynchronousMachine
+    ) -> None:
+        """Compute the back-EMF before converter post-processing."""
+        self.w_m = subsystem.par.n_p * self.w_M
+        self.u_s_open_ab = subsystem.compute_open_circuit_voltage(self, self)
 
     def compute_input_derived_signals(
         self, t: np.ndarray, subsystem: SynchronousMachine

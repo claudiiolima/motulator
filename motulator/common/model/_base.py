@@ -1,6 +1,7 @@
 """Base classes for models."""
 
 from dataclasses import InitVar, dataclass, field
+from enum import Enum
 from typing import Any, Protocol
 
 import numpy as np
@@ -147,8 +148,11 @@ class Model:
     def rhs(self, t: float, state_list: list[complex]) -> list[complex]:
         """Compute complete state derivative list for the solver."""
         self.set_states(state_list)
-        self.set_outputs(t)
-        self.interconnect()
+        # Resolve the direct-feedthrough chain mechanics -> machine/filter -> converter.
+        # Three passes are sufficient for the supported system interconnections.
+        for _ in range(3):
+            self.set_outputs(t)
+            self.interconnect()
         rhs_list: list[complex] = []
         for subsystem in self.subsystems:
             if derivatives := subsystem.rhs(t):
@@ -201,7 +205,10 @@ class ModelTimeSeries:
         # Process ZOH inputs
         for attr_name, value in vars(history).items():
             if attr_name != "t" and not attr_name.startswith("_"):
-                setattr(self, attr_name, np.array(value))
+                dtype = (
+                    object if any(isinstance(item, Enum) for item in value) else None
+                )
+                setattr(self, attr_name, np.array(value, dtype=dtype))
         # Process subsystems
         zoh_connections = zoh_connections or {}
         if subsystems is not None and connections is not None:
@@ -219,7 +226,13 @@ class ModelTimeSeries:
         """Build time series for all subsystems."""
         ts_objects = self._create_time_series(subsystems)
         self._add_zoh_input_signals(ts_objects, zoh_connections)
-        self._compute_zoh_input_derived_signals(subsystems, ts_objects)
+        # Two passes resolve direct-feedthrough chains. On the first pass, electrical
+        # loads compute their open-circuit terminal voltages. On the second pass, the
+        # converter uses those voltages to resolve floating Hi-Z terminals.
+        for _ in range(2):
+            self._add_input_signals(ts_objects, connections)
+            self._compute_zoh_input_derived_signals(subsystems, ts_objects)
+        # Propagate the final converter voltages to the remaining subsystems.
         self._add_input_signals(ts_objects, connections)
         self._compute_input_derived_signals(subsystems, ts_objects)
 
@@ -318,7 +331,7 @@ class Delay:
     """
 
     def __init__(self, length: int = 1, elem: int = 3) -> None:
-        self.data = [elem * [0] for _ in range(length)]  # Creates zero lists
+        self.data = [elem * [0.0] for _ in range(length)]  # Creates zero lists
 
     def __call__(self, u: Any) -> Any:
         """
