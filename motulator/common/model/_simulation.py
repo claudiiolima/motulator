@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -138,8 +138,8 @@ class Simulation:
                 progress_bar.refresh()
                 progress_bar.close()
 
-        except FloatingPointError:
-            print(f"Invalid value encountered at {self.mdl.t0:.2f} s.")
+        except FloatingPointError as err:
+            print(f"Simulation stopped at {self.mdl.t0:.2f} s: {err}")
 
         # Post-process the solution data
         mdl_ts = ModelTimeSeries(self.mdl)
@@ -155,7 +155,7 @@ class Simulation:
             # Control, computational delay, and carrier comparison
             T_s, ref_duty_ratio = self.ctrl(self.mdl)
             duty_ratio = self.mdl.delay(ref_duty_ratio)
-            t_steps, sw_states = self.mdl.pwm(T_s, duty_ratio)
+            t_steps, q_abc, b_abc = self.mdl.pwm(T_s, duty_ratio)
             converter_mode = getattr(
                 self.ctrl, "active_converter_mode", ConverterMode.NORMAL
             )
@@ -166,17 +166,17 @@ class Simulation:
                 if t_step > 0:
                     # Hold the converter mode independently of PWM switching states.
                     self.mdl.converter.inp.converter_mode = converter_mode
-                    self.mdl.converter.inp.q_c_ab = cast(complex, sw_states[i])
+                    # Set the switching state and get initial values
+                    self.mdl.converter.set_gate_signals(q_abc[i], b_abc[i])
                     state0 = self.mdl.get_initial_values()
 
                     # Set the integration time span
                     t_span = (self.mdl.t0, self.mdl.t0 + t_step)
 
-                    # Create array of evaluation times if N_eval is given
+                    # Create array of evaluation times if N_eval is given, including
+                    # the end point for the final state
                     if N_eval != 0:
-                        t_eval = np.linspace(
-                            t_span[0], t_span[1], N_eval, endpoint=False
-                        )
+                        t_eval = np.linspace(t_span[0], t_span[1], N_eval + 1)
                     else:
                         t_eval = None
 
@@ -184,9 +184,18 @@ class Simulation:
                     sol = solve_ivp(
                         self.mdl.rhs, t_span, state0, t_eval=t_eval, **self.cfg.solver
                     )
+                    if not sol.success:
+                        raise FloatingPointError(sol.message)
 
-                    # Set the new initial time and save the solution
+                    # Set the final state, since the last call to rhs may be at an
+                    # earlier instant (e.g., DOP853 with t_eval)
                     self.mdl.t0 = t_span[-1]
+                    self.mdl.set_states(sol.y[:, -1])
+                    self.mdl.set_outputs(self.mdl.t0)
+
+                    # Save the solution (excluding the end point if N_eval is given)
+                    if N_eval != 0:
+                        sol.t, sol.y = sol.t[:-1], sol.y[:, :-1]
                     self.mdl.save(sol)
 
             # Update progress after each control step

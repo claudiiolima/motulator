@@ -30,6 +30,7 @@ class References(Protocol):
     d_abc: Sequence[float]  # Duty ratios for three-phase PWM
     tau_M: float | None  # Torque reference
     u_s: complex  # Stator voltage reference (controller coordinates)
+    u_s_lim: complex  # Limited stator voltage reference (controller coordinates)
     w_M: float | None  # Mechanical speed
 
 
@@ -94,6 +95,8 @@ class VectorControlSystem(ControlSystem):
         Vector controller whose input is the torque reference.
     speed_ctrl : SpeedController | PIController | None
         Speed controller. If not given or None, torque-control mode is used.
+    pwm : PWM, optional
+        Pulse-width modulator, defaults to `PWM()`.
 
     """
 
@@ -101,9 +104,10 @@ class VectorControlSystem(ControlSystem):
         self,
         vector_ctrl: VectorController,
         speed_ctrl: SpeedController | PIController | None = None,
+        pwm: PWM | None = None,
     ) -> None:
         super().__init__()
-        self.pwm = PWM()
+        self.pwm = pwm if pwm is not None else PWM()
         self.vector_ctrl = vector_ctrl
         self.speed_ctrl = speed_ctrl
         self.ext_ref = ExternalReferences()
@@ -158,7 +162,7 @@ class VectorControlSystem(ControlSystem):
 
     def get_feedback(self, meas: Measurements) -> Feedbacks:
         """Get feedback signals."""
-        u_c_ab = self.pwm.get_realized_voltage()
+        u_c_ab = self.pwm.get_realized_voltage(meas.i_c_ab, meas.u_dc)
         fbk = self.vector_ctrl.get_feedback(u_c_ab, meas.i_c_ab, meas.w_M, meas.theta_M)
         fbk.u_dc = meas.u_dc
         return fbk
@@ -176,10 +180,21 @@ class VectorControlSystem(ControlSystem):
         else:
             raise ValueError("Either speed or torque reference must be set")
         ref = self.vector_ctrl.compute_output(tau_M_ref, fbk)
-        u_s_ab_ref = exp(1j * fbk.theta_c) * ref.u_s
-        ref.d_abc = self.pwm(ref.T_s, u_s_ab_ref, fbk.u_dc, fbk.w_c)
+        ref.d_abc = self.modulate(ref.T_s, ref.u_s, fbk)
+        ref.u_s_lim = exp(-1j * fbk.theta_c) * self.pwm.limited_voltage
         ref.w_M = w_M_ref  # Store the speed reference for later use
         return ref
+
+    def modulate(self, T_s: float, u_s_ref: complex, fbk: Feedbacks) -> Sequence[float]:
+        """
+        Compute the duty ratios from the stator voltage reference.
+
+        The reference is in the controller coordinates. Subclasses can override this
+        method, e.g., to control an output filter between the converter and the machine.
+
+        """
+        u_s_ab_ref = exp(1j * fbk.theta_c) * u_s_ref
+        return self.pwm(T_s, u_s_ab_ref, fbk.u_dc, fbk.w_c)
 
     def update(self, ref: References, fbk: Feedbacks) -> None:
         """Update controller states."""
@@ -229,13 +244,17 @@ class VHzControlSystem(ControlSystem):
         V/Hz controller to be used in the drive control system.
     slew_rate : float, optional
         Slew rate (mechanical rad/s**2) for the speed reference, defaults to `inf`.
+    pwm : PWM, optional
+        Pulse-width modulator, defaults to `PWM(overmodulation=vhz_ctrl.pwm_mode)`.
 
     """
 
-    def __init__(self, vhz_ctrl: VHzController, slew_rate: float = inf) -> None:
+    def __init__(
+        self, vhz_ctrl: VHzController, slew_rate: float = inf, pwm: PWM | None = None
+    ) -> None:
         super().__init__()
         self.vhz_ctrl = vhz_ctrl
-        self.pwm = PWM(overmodulation=self.vhz_ctrl.pwm_mode)
+        self.pwm = pwm if pwm is not None else PWM(overmodulation=vhz_ctrl.pwm_mode)
         self.rate_limiter = RateLimiter(slew_rate)
         self.ext_ref = ExternalReferences()
         self._w_M_ref: float = 0  # For storing ramp-limited speed reference
@@ -269,7 +288,7 @@ class VHzControlSystem(ControlSystem):
     def get_feedback(self, meas: Measurements) -> Feedbacks:
         """Get feedback signals."""
         if self.ext_ref.w_M is not None:
-            u_c_ab = self.pwm.get_realized_voltage()
+            u_c_ab = self.pwm.get_realized_voltage(meas.i_c_ab, meas.u_dc)
             w_M_ref = self.ext_ref.w_M(self.t)
             self._w_M_ref = self.rate_limiter(self.vhz_ctrl.T_s, w_M_ref)
             fbk = self.vhz_ctrl.get_feedback(u_c_ab, meas.i_c_ab, self._w_M_ref)
@@ -280,10 +299,21 @@ class VHzControlSystem(ControlSystem):
     def compute_output(self, fbk: Feedbacks) -> References:
         """Compute controller output based on feedback."""
         ref = self.vhz_ctrl.compute_output(fbk)
-        u_s_ab_ref = exp(1j * fbk.theta_c) * ref.u_s
-        ref.d_abc = self.pwm(ref.T_s, u_s_ab_ref, fbk.u_dc, fbk.w_c)
+        ref.d_abc = self.modulate(ref.T_s, ref.u_s, fbk)
+        ref.u_s_lim = exp(-1j * fbk.theta_c) * self.pwm.limited_voltage
         ref.w_M = self._w_M_ref  # Store the speed reference for later use
         return ref
+
+    def modulate(self, T_s: float, u_s_ref: complex, fbk: Feedbacks) -> Sequence[float]:
+        """
+        Compute the duty ratios from the stator voltage reference.
+
+        The reference is in the controller coordinates. Subclasses can override this
+        method, e.g., to control an output filter between the converter and the machine.
+
+        """
+        u_s_ab_ref = exp(1j * fbk.theta_c) * u_s_ref
+        return self.pwm(T_s, u_s_ab_ref, fbk.u_dc, fbk.w_c)
 
     def update(self, ref: References, fbk: Feedbacks) -> None:
         """Update controller states."""

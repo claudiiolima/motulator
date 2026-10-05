@@ -1,5 +1,6 @@
 """Flux-vector control of induction machine drives."""
 
+from copy import copy
 from dataclasses import dataclass
 from math import inf, pi, sqrt
 from typing import Callable, Literal
@@ -28,6 +29,7 @@ class References:
     tau_M: float = 0.0
     psi_s: float = 0.0
     u_s: complex = 0j
+    u_s_lim: complex = 0j
     i_s: complex = 0j
 
 
@@ -299,6 +301,7 @@ class FluxVectorController:
         par: InductionMachineInvGammaPars | InductionMachinePars,
         cfg: FluxVectorControllerCfg,
     ) -> None:
+        par = copy(par)  # The observer updates the saturation state of this copy
         self.reference_gen = ReferenceGenerator(
             par, cfg.psi_s_nom, cfg.i_s_max, cfg.tau_M_max, cfg.k_u, cfg.k_b
         )
@@ -347,6 +350,7 @@ class FluxVectorController:
         # Transformation to estimated rotor flux coordinates
         T = np.exp(-1j * np.angle(ts.fbk.psi_R))
         ts.ref.u_s = T * ts.ref.u_s
+        ts.ref.u_s_lim = T * ts.ref.u_s_lim
         ts.fbk.i_s = T * ts.fbk.i_s
         ts.ref.i_s = T * ts.ref.i_s
         ts.fbk.psi_s = T * ts.fbk.psi_s
@@ -414,6 +418,7 @@ class ObserverBasedVHzController:
         par: InductionMachineInvGammaPars | InductionMachinePars,
         cfg: ObserverBasedVHzControllerCfg,
     ) -> None:
+        par = copy(par)  # The observer updates the saturation state of this copy
         self.cfg = cfg
         self.pwm_mode: Literal["MPE", "MME", "six_step"] = "MME"
         self.reference_gen = ReferenceGenerator(
@@ -457,6 +462,7 @@ class ObserverBasedVHzController:
         # Transformation to estimated rotor flux coordinates
         T = np.exp(-1j * np.angle(ts.fbk.psi_R))
         ts.ref.u_s = T * ts.ref.u_s
+        ts.ref.u_s_lim = T * ts.ref.u_s_lim
         ts.fbk.i_s = T * ts.fbk.i_s
         ts.ref.i_s = T * ts.ref.i_s
         ts.fbk.psi_s = T * ts.fbk.psi_s
