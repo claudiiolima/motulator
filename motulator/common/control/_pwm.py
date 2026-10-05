@@ -7,8 +7,9 @@ strategies.
 """
 
 from cmath import exp, phase
+from collections.abc import Callable
 from math import acos, floor, pi, sqrt
-from typing import Callable, Literal
+from typing import Literal
 
 import numpy as np
 
@@ -262,6 +263,11 @@ class PWM:
         i_abc = complex2abc(i_c_ab)
         d_err = 0.5 * sum(self.d_err(i_abc, d) for d in self._d_abc)
         return self.realized_voltage - u_dc * abc2complex(d_err)
+
+    def synchronize(self, u_c_ab: complex) -> None:
+        """Synchronize the realized-voltage states to a physical voltage."""
+        self.realized_voltage = u_c_ab
+        self._old_u_c_ab = u_c_ab
 
     def update(self, u_c_ab: complex, d_abc: list[float]) -> None:
         """Update the realized voltage."""

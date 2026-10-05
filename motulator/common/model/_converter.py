@@ -7,9 +7,10 @@ vectors are used also for duty ratios and switching states, wherever applicable.
 
 """
 
+from collections.abc import Callable
 from dataclasses import InitVar, dataclass, field
 from math import sqrt
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -69,6 +70,8 @@ class VoltageSourceConverter(Subsystem):
         used to model the effect of parasitic capacitances, for example.
 
     """
+
+    n_legs: int = 3
 
     def __init__(
         self,

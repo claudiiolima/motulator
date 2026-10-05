@@ -32,7 +32,6 @@ __all__ = [
     "SaturatedSynchronousMachinePars",
     "Simulation",
     "SpatialSaturatedSynchronousMachinePars",
-    "MechanicalSystem",
     "SynchronousMachine",
     "SynchronousMachinePars",
     "TwoMassMechanicalSystem",

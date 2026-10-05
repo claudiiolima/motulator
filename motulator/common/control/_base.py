@@ -1,8 +1,9 @@
 """Base classes for controls."""
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Protocol
 
 import numpy as np
 
